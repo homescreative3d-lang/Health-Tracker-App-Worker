@@ -52,12 +52,12 @@ VALUES (
 ON CONFLICT ("Id") DO NOTHING;
 
 CREATE OR REPLACE FUNCTION "notify_notification_runtime_config_changed"()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM pg_notify('notification_schedule_changed', 'runtime-config');
     RETURN NEW;
 END;
-$;
+$$;
 DROP TRIGGER IF EXISTS "TR_NotificationRuntimeConfig_Changed" ON "NotificationRuntimeConfig";
 CREATE TRIGGER "TR_NotificationRuntimeConfig_Changed"
 AFTER UPDATE ON "NotificationRuntimeConfig"
