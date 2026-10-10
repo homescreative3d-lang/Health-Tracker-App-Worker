@@ -47,29 +47,40 @@ func (s *Scheduler) RunEventDriven(ctx context.Context, databaseURL string, reco
 		return fmt.Errorf("listen for schedule changes: %w", err)
 	}
 	notifications := waitForNotifications(ctx, listener)
-	if err := s.reconcileJobs(ctx); err != nil {
-		return fmt.Errorf("initial schedule reconciliation: %w", err)
+	if enabled, err := s.goSchedulerEnabled(ctx); err != nil {
+		return fmt.Errorf("read notification scheduler configuration: %w", err)
+	} else if enabled {
+		if err := s.reconcileJobs(ctx); err != nil {
+			return fmt.Errorf("initial schedule reconciliation: %w", err)
+		}
 	}
 
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.processOutbox(ctx); err != nil {
-			s.log.Error("outbox processing failed", "error", err)
-		}
-		if err := s.processDueJobs(ctx); err != nil {
-			s.log.Error("due job processing failed", "error", err)
-		}
-
-		wait := recoveryInterval
-		next, err := s.nextWake(ctx)
+		enabled, err := s.goSchedulerEnabled(ctx)
 		if err != nil {
-			s.log.Warn("could not calculate next worker wake", "error", err)
-		} else if next <= 0 {
-			wait = time.Second
-		} else if next < wait {
-			wait = next
+			s.log.Error("could not read notification scheduler configuration", "error", err)
+		}
+		wait := recoveryInterval
+		if enabled && err == nil {
+			if err := s.processOutbox(ctx); err != nil {
+				s.log.Error("outbox processing failed", "error", err)
+			}
+			if err := s.processDueJobs(ctx); err != nil {
+				s.log.Error("due job processing failed", "error", err)
+			}
+			next, err := s.nextWake(ctx)
+			if err != nil {
+				s.log.Warn("could not calculate next worker wake", "error", err)
+			} else if next <= 0 {
+				wait = time.Second
+			} else if next < wait {
+				wait = next
+			}
+		} else {
+			s.log.Debug("Go notification scheduler is disabled by NotificationRuntimeConfig")
 		}
 		if wait < time.Second {
 			wait = time.Second
@@ -130,6 +141,15 @@ func waitForNotifications(ctx context.Context, listener *pgx.Conn) <-chan error 
 	}()
 	return notifications
 }
+func (s *Scheduler) goSchedulerEnabled(ctx context.Context) (bool, error) {
+	var provider string
+	err := s.db.QueryRowContext(ctx, `SELECT "Value" FROM "NotificationRuntimeConfig" WHERE "Key" = $1`, "NotificationSchedulerProvider").Scan(&provider)
+	if err != nil {
+		return false, err
+	}
+	return provider == "go", nil
+}
+
 func (s *Scheduler) processOutbox(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT "Id" FROM "NotificationOutbox" WHERE "ProcessedAt" IS NULL ORDER BY "CreatedAt" LIMIT 500`)
 	if err != nil { return err }
