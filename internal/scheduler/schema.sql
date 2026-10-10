@@ -3,6 +3,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS "IX_Notifications_IdempotencyKey"
     ON "Notifications" ("IdempotencyKey")
     WHERE "IdempotencyKey" IS NOT NULL;
 
+-- Migrate the legacy .NET Key/Value switch table without losing its selected provider.
+DO $migration$
+BEGIN
+    IF to_regclass('"NotificationRuntimeConfig"') IS NOT NULL
+       AND EXISTS (
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'NotificationRuntimeConfig'
+             AND column_name = 'Key'
+       )
+       AND NOT EXISTS (
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'NotificationRuntimeConfig'
+             AND column_name = 'Id'
+       )
+       AND to_regclass('"NotificationRuntimeConfigLegacy"') IS NULL THEN
+        ALTER TABLE "NotificationRuntimeConfig" RENAME TO "NotificationRuntimeConfigLegacy";
+    END IF;
+END
+$migration$;
+
+CREATE TABLE IF NOT EXISTS "NotificationRuntimeConfigLegacy" (
+    "Key" text PRIMARY KEY,
+    "Value" text NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS "NotificationRuntimeConfig" (
     "Id" integer PRIMARY KEY CHECK ("Id" = 1),
     "Enabled" boolean NOT NULL DEFAULT true,
@@ -11,7 +38,17 @@ CREATE TABLE IF NOT EXISTS "NotificationRuntimeConfig" (
     "UpdatedAt" timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO "NotificationRuntimeConfig" ("Id", "Enabled", "ActiveProvider")
-VALUES (1, true, 'dotnet')
+VALUES (
+    1,
+    true,
+    COALESCE(
+        (SELECT CASE WHEN "Value" = 'go' THEN 'go' ELSE 'dotnet' END
+         FROM "NotificationRuntimeConfigLegacy"
+         WHERE "Key" = 'NotificationSchedulerProvider'
+         LIMIT 1),
+        'dotnet'
+    )
+)
 ON CONFLICT ("Id") DO NOTHING;
 
 CREATE OR REPLACE FUNCTION "notify_notification_runtime_config_changed"()
