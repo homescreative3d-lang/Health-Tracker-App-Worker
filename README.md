@@ -61,16 +61,36 @@ Optional:
 
 The worker applies its idempotent schema and trigger setup on startup. The database role therefore needs permission to create tables, indexes, and triggers. Test against a separate database before using production data.
 
-## Local development
+## Local development (Windows / PowerShell)
 
-```sh
+Start the API repository's local PostgreSQL service first:
+
+```powershell
+docker compose -f docker-compose.dev.yml up -d postgres
+```
+
+Start the API once so it initializes the application tables and `NotificationRuntimeConfig`, then switch the provider to `go` in DBeaver or psql:
+
+```sql
+UPDATE "NotificationRuntimeConfig"
+SET "Enabled" = true, "ActiveProvider" = 'go', "UpdatedAt" = now()
+WHERE "Id" = 1;
+```
+
+From this repository, set the local worker environment and run the checks:
+
+```powershell
+$env:DATABASE_URL = "postgres://tended:tended_local_only@localhost:5433/tended_dev?sslmode=disable"
+$env:APP_TIMEZONE_FALLBACK = "Asia/Kolkata"
+$env:RECOVERY_INTERVAL = "30s"
+
 go mod tidy
 go test ./...
 go vet ./...
 go run ./cmd/worker
 ```
 
-Set `DATABASE_URL` to the same local PostgreSQL database as the API. The worker can run without VAPID keys for local schedule/in-app notification testing; browser push is disabled until both keys are configured. To test scheduling locally, first change `NotificationRuntimeConfig.ActiveProvider` to `go`; otherwise the worker remains safely idle.
+The worker can run without VAPID keys for local schedule/in-app notification testing; browser push is disabled until both `WEBPUSH_PUBLIC_KEY` and `WEBPUSH_PRIVATE_KEY` are configured. When you stop the worker, switch `ActiveProvider` back to `dotnet` to re-enable the .NET scheduler. Never run both as active providers.
 
 ## Operational safety
 
