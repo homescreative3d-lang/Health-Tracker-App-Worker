@@ -2,9 +2,42 @@
 
 A Go worker for durable, platform-independent medicine notifications. PostgreSQL is the source of truth; the same scheduler can serve the current React web app and a future Android app.
 
+## Runtime provider switch (shared with .NET)
+
+The worker and .NET API use the same singleton PostgreSQL table, `NotificationRuntimeConfig`:
+
+- `Enabled = false`: neither scheduler is authorized to process notifications.
+- `Enabled = true, ActiveProvider = 'dotnet'`: only the existing .NET scheduler may process notifications.
+- `Enabled = true, ActiveProvider = 'go'`: only this Go worker may process notifications.
+
+The default row is deliberately `Enabled=true, ActiveProvider='dotnet'`, so installing the worker does not silently activate it. The worker reads this flag before reconciling or delivering jobs, and the database sends a PostgreSQL notification when the setting changes. It also checks the setting again during recovery. Missing/unreadable config fails closed (no notifications).
+
+Example switch (run only after the worker is tested and deployed):
+```sql
+UPDATE "NotificationRuntimeConfig"
+SET "Enabled" = true, "ActiveProvider" = 'go', "UpdatedAt" = now()
+WHERE "Id" = 1;
+```
+
+Switch back to .NET:
+```sql
+UPDATE "NotificationRuntimeConfig"
+SET "Enabled" = true, "ActiveProvider" = 'dotnet', "UpdatedAt" = now()
+WHERE "Id" = 1;
+```
+
+Pause both:
+```sql
+UPDATE "NotificationRuntimeConfig"
+SET "Enabled" = false, "UpdatedAt" = now()
+WHERE "Id" = 1;
+```
+
+**Never enable both schedulers at the same time.** The database flag only selects the active provider; it does not deploy/start the Go worker.
+
 ## Architecture
 
-- Medicine, user notification-preference, and family-membership changes write durable rows to `NotificationOutbox` through PostgreSQL triggers.
+- Medicine, user-preference, and family-membership changes write durable rows to `NotificationOutbox` through PostgreSQL triggers.
 - PostgreSQL `LISTEN/NOTIFY` wakes the worker immediately after a committed change.
 - The worker rebuilds the next seven days of reminder jobs in `NotificationJobs`; jobs survive restarts and are claimed with `FOR UPDATE SKIP LOCKED`.
 - A low-frequency recovery timeout checks the durable outbox in case the listener was disconnected or a notification was missed. It does not repeatedly scan every medicine on a short polling interval.
@@ -35,8 +68,10 @@ go vet ./...
 go run ./cmd/worker
 ```
 
+Set `DATABASE_URL` to the same local PostgreSQL database as the API. Generate VAPID keys and configure them only if you want to test real browser push. To test scheduling locally, first change `NotificationRuntimeConfig.ActiveProvider` to `go`; otherwise the worker remains safely idle.
+
 ## Operational safety
 
-**Do not run this worker and the .NET `NotificationScheduler` at the same time in production.** The .NET scheduler must be disabled only after the Go worker is tested against a separate database and its push/in-app delivery behavior is verified. This PR does not disable the .NET scheduler or deploy the worker.
-
-For reliable time-sensitive reminders, run the worker on an always-on service. A sleeping free service cannot guarantee on-time delivery.
+- Do not run this worker and the .NET `NotificationScheduler` as active providers simultaneously.
+- This branch does not deploy the worker or disable the .NET scheduler.
+- A sleeping free service cannot guarantee on-time delivery; use an always-on worker for reliable medication reminders.
