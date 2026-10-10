@@ -122,7 +122,7 @@ func (s *Scheduler) processOutbox(ctx context.Context) error {
 }
 func (s *Scheduler) reconcileJobs(ctx context.Context) error {
 	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `UPDATE "NotificationJobs" SET "Status"='cancelled',"UpdatedAt"=now() WHERE "Status"='pending' AND "ScheduledFor" > now()`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE "NotificationJobs" SET "Status"='cancelled',"UpdatedAt"=now() WHERE "Status"='pending'`); err != nil {
 		return err
 	}
 	users, err := s.loadUsers(ctx)
