@@ -48,6 +48,8 @@ WHERE "Id" = 1;
 
 Required:
 - `DATABASE_URL`
+
+Optional (browser push is disabled if either key is missing):
 - `WEBPUSH_PUBLIC_KEY`
 - `WEBPUSH_PRIVATE_KEY`
 
@@ -68,7 +70,7 @@ go vet ./...
 go run ./cmd/worker
 ```
 
-Set `DATABASE_URL` to the same local PostgreSQL database as the API. Generate VAPID keys and configure them only if you want to test real browser push. To test scheduling locally, first change `NotificationRuntimeConfig.ActiveProvider` to `go`; otherwise the worker remains safely idle.
+Set `DATABASE_URL` to the same local PostgreSQL database as the API. The worker can run without VAPID keys for local schedule/in-app notification testing; browser push is disabled until both keys are configured. To test scheduling locally, first change `NotificationRuntimeConfig.ActiveProvider` to `go`; otherwise the worker remains safely idle.
 
 ## Operational safety
 
