@@ -45,6 +45,9 @@ func NewWebPush(publicKey, privateKey, subject string) *WebPush {
 }
 
 func (w *WebPush) Send(ctx context.Context, sub Subscription, message Message) error {
+	if w.publicKey == "" || w.privateKey == "" {
+		return fmt.Errorf("web push disabled: configure WEBPUSH_PUBLIC_KEY and WEBPUSH_PRIVATE_KEY to enable browser push")
+	}
 	payload, err := json.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("encode push payload: %w", err)
