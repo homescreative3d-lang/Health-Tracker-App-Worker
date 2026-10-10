@@ -37,11 +37,11 @@ func Load() (Config, error) {
 	if cfg.WebPushSubject == "" {
 		cfg.WebPushSubject = "mailto:notifications@tended.app"
 	}
-	if cfg.RecoveryInterval, err = durationEnv("RECOVERY_INTERVAL", 5*time.Minute); err != nil {
+	if cfg.RecoveryInterval, err = durationEnv("RECOVERY_INTERVAL", 20*time.Second); err != nil {
 		return Config{}, err
 	}
-	if cfg.RecoveryInterval < 30*time.Second {
-		return Config{}, fmt.Errorf("RECOVERY_INTERVAL must be at least 30s")
+	if cfg.RecoveryInterval < 20*time.Second {
+		return Config{}, fmt.Errorf("RECOVERY_INTERVAL must be at least 20s")
 	}
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "info"
