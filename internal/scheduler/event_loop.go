@@ -35,27 +35,18 @@ func (s *Scheduler) RunEventDriven(ctx context.Context, databaseURL string, reco
 	if err != nil {
 		return fmt.Errorf("open PostgreSQL notification listener: %w", err)
 	}
-	defer listener.Close(context.Background())
+	defer func() {
+		if listener != nil {
+			_ = listener.Close(context.Background())
+		}
+	}()
 	if _, err := listener.PgConn().Exec(ctx, schemaSQL).ReadAll(); err != nil {
 		return fmt.Errorf("apply notification worker schema: %w", err)
 	}
 	if _, err := listener.Exec(ctx, "LISTEN notification_schedule_changed"); err != nil {
 		return fmt.Errorf("listen for schedule changes: %w", err)
 	}
-	notifications := make(chan error, 1)
-	go func() {
-		for {
-			_, waitErr := listener.WaitForNotification(ctx)
-			select {
-			case notifications <- waitErr:
-			case <-ctx.Done():
-				return
-			}
-			if waitErr != nil {
-				return
-			}
-		}
-	}()
+	notifications := waitForNotifications(ctx, listener)
 	if err := s.reconcileJobs(ctx); err != nil {
 		return fmt.Errorf("initial schedule reconciliation: %w", err)
 	}
@@ -95,13 +86,50 @@ func (s *Scheduler) RunEventDriven(ctx context.Context, databaseURL string, reco
 				select { case <-timer.C: default: }
 			}
 			if waitErr != nil {
-				return fmt.Errorf("PostgreSQL notification listener stopped: %w", waitErr)
+				_ = listener.Close(context.Background())
+				listener = nil
+				for ctx.Err() == nil {
+					reconnected, connectErr := pgx.Connect(ctx, databaseURL)
+					if connectErr == nil {
+						_, connectErr = reconnected.Exec(ctx, "LISTEN notification_schedule_changed")
+					}
+					if connectErr == nil {
+						listener = reconnected
+						notifications = waitForNotifications(ctx, listener)
+						s.log.Info("PostgreSQL notification listener reconnected")
+						break
+					}
+					if reconnected != nil { _ = reconnected.Close(context.Background()) }
+					s.log.Warn("notification listener reconnect failed", "error", connectErr)
+					timer := time.NewTimer(5 * time.Second)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+					case <-timer.C:
+					}
+				}
+				if ctx.Err() != nil { return ctx.Err() }
 			}
 		case <-timer.C:
 		}
 	}
 }
 
+func waitForNotifications(ctx context.Context, listener *pgx.Conn) <-chan error {
+	notifications := make(chan error, 1)
+	go func() {
+		for {
+			_, err := listener.WaitForNotification(ctx)
+			select {
+			case notifications <- err:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil { return }
+		}
+	}()
+	return notifications
+}
 func (s *Scheduler) processOutbox(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT "Id" FROM "NotificationOutbox" WHERE "ProcessedAt" IS NULL ORDER BY "CreatedAt" LIMIT 500`)
 	if err != nil { return err }
