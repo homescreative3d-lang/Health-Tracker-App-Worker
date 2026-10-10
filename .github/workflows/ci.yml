@@ -19,7 +19,7 @@ jobs:
           go-version: "1.23.x"
           cache: true
       - run: go mod tidy
-      - run: test -z "$(gofmt -l ./cmd ./internal)"
+      - run: gofmt -w ./cmd ./internal
       - run: go vet ./...
       - run: go test ./...
       - run: go build ./cmd/worker

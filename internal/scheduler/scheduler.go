@@ -170,14 +170,9 @@ func (s *Scheduler) processDose(ctx context.Context, u user, m medicine, doseID,
 	if err := s.db.QueryRowContext(ctx, `SELECT "Status" FROM "DoseEvents" WHERE "Id"=$1`, doseID).Scan(&status); err != nil { return err }
 	if status == "taken" || status == "skipped" || status == "rescheduled" { return nil }
 	minutesUntil := scheduled.Sub(now).Minutes()
-	if u.LeadMinutes > 0 && u.RepeatMinutes > 0 && minutesUntil > 0 && minutesUntil <= float64(u.LeadMinutes) {
-		firstReminder := scheduled.Add(-time.Duration(u.LeadMinutes) * time.Minute)
-		elapsed := now.Sub(firstReminder)
-		slot := elapsed / (time.Duration(u.RepeatMinutes) * time.Minute)
-		occurrence := firstReminder.Add(slot * time.Duration(u.RepeatMinutes) * time.Minute)
-		if elapsed >= 0 && now.Sub(occurrence) < 20*time.Second {
-			if err := s.deliverOnce(ctx, u.ID, doseID, "dose_reminder", occurrence, "Medicine reminder", fmt.Sprintf("%s for %s is due at %s.", m.Name, m.PatientName, doseTime), "dose_reminder"); err != nil { return err }
-		}
+	if minutesUntil > 0 && minutesUntil <= float64(max(0, u.LeadMinutes)) {
+		occurrence := now.Truncate(time.Minute)
+		if err := s.deliverOnce(ctx, u.ID, doseID, "dose_reminder", occurrence, "Medicine reminder", fmt.Sprintf("%s for %s is due at %s.", m.Name, m.PatientName, doseTime), "dose_reminder"); err != nil { return err }
 	}
 	if u.FinalEnabled && minutesUntil <= 0 && minutesUntil > -1 {
 		if err := s.deliverOnce(ctx, u.ID, doseID, "dose_final", scheduled, "Medicine due now", fmt.Sprintf("%s for %s is due now.", m.Name, m.PatientName), "dose_final"); err != nil { return err }
