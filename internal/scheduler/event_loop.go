@@ -291,8 +291,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job notificationJob) error {
 			return err
 		}
 		if status == "taken" || status == "skipped" || status == "rescheduled" {
-			_, err := s.db.ExecContext(ctx, `UPDATE "NotificationJobs" SET "Status"='cancelled',"LockedUntil"=NULL,"UpdatedAt"=now() WHERE "Id"=$1`, job.ID)
-			return err
+			return nil
 		}
 		if job.Type == "dose_missed" && status == "pending" {
 			if _, err := s.db.ExecContext(ctx, `UPDATE "DoseEvents" SET "Status"='missed',"MissedAt"=now() WHERE "Id"=$1 AND "Status"='pending'`, job.DoseEventID.String); err != nil {
