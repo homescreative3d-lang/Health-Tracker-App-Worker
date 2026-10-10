@@ -43,6 +43,20 @@ func (s *Scheduler) RunEventDriven(ctx context.Context, databaseURL string, reco
 	if _, err := listener.Exec(ctx, "LISTEN notification_schedule_changed"); err != nil {
 		return fmt.Errorf("listen for schedule changes: %w", err)
 	}
+	notifications := make(chan error, 1)
+	go func() {
+		for {
+			_, waitErr := listener.WaitForNotification(ctx)
+			select {
+			case notifications <- waitErr:
+			case <-ctx.Done():
+				return
+			}
+			if waitErr != nil {
+				return
+			}
+		}
+	}()
 	if err := s.reconcileJobs(ctx); err != nil {
 		return fmt.Errorf("initial schedule reconciliation: %w", err)
 	}
@@ -68,30 +82,43 @@ func (s *Scheduler) RunEventDriven(ctx context.Context, databaseURL string, reco
 		if wait < time.Second {
 			wait = time.Second
 		}
-		waitCtx, cancel := context.WithTimeout(ctx, wait)
-		_, err = listener.WaitForNotification(waitCtx)
-		cancel()
-		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-			return fmt.Errorf("PostgreSQL notification listener stopped: %w", err)
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select { case <-timer.C: default: }
+			}
+			return ctx.Err()
+		case waitErr := <-notifications:
+			if !timer.Stop() {
+				select { case <-timer.C: default: }
+			}
+			if waitErr != nil {
+				return fmt.Errorf("PostgreSQL notification listener stopped: %w", waitErr)
+			}
+		case <-timer.C:
 		}
 	}
 }
 
 func (s *Scheduler) processOutbox(ctx context.Context) error {
-	var pending int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM "NotificationOutbox" WHERE "ProcessedAt" IS NULL`).Scan(&pending); err != nil {
-		return err
+	rows, err := s.db.QueryContext(ctx, `SELECT "Id" FROM "NotificationOutbox" WHERE "ProcessedAt" IS NULL ORDER BY "CreatedAt" LIMIT 500`)
+	if err != nil { return err }
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil { _ = rows.Close(); return err }
+		ids = append(ids, id)
 	}
-	if pending == 0 {
-		return nil
+	if err := rows.Err(); err != nil { _ = rows.Close(); return err }
+	_ = rows.Close()
+	if len(ids) == 0 { return nil }
+	if err := s.reconcileJobs(ctx); err != nil { return err }
+	for _, id := range ids {
+		if _, err := s.db.ExecContext(ctx, `UPDATE "NotificationOutbox" SET "ProcessedAt"=now() WHERE "Id"=$1 AND "ProcessedAt" IS NULL`, id); err != nil { return err }
 	}
-	if err := s.reconcileJobs(ctx); err != nil {
-		return err
-	}
-	_, err := s.db.ExecContext(ctx, `UPDATE "NotificationOutbox" SET "ProcessedAt"=now() WHERE "ProcessedAt" IS NULL`)
-	return err
+	return nil
 }
-
 func (s *Scheduler) reconcileJobs(ctx context.Context) error {
 	now := time.Now().UTC()
 	if _, err := s.db.ExecContext(ctx, `UPDATE "NotificationJobs" SET "Status"='cancelled',"UpdatedAt"=now() WHERE "Status"='pending' AND "ScheduledFor" > now()`); err != nil {
