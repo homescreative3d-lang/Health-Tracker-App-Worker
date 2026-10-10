@@ -331,7 +331,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job notificationJob) error {
 		return err
 	}
 	if err := s.recordAndSendPush(ctx, job); err != nil {
-		s.log.Warn("push delivery failed; in-app notification is retained", "job_id", job.ID, "error", err)
+		return fmt.Errorf("record push delivery: %w", err)
 	}
 	return nil
 }
@@ -375,7 +375,10 @@ RETURNING "Id"`, job.UserID, nullableString(job.DoseEventID), job.Type, job.Sche
 	if _, updateErr := s.db.ExecContext(ctx, `UPDATE "NotificationDeliveries" SET "Status"=$2,"SentAt"=$3,"Error"=$4 WHERE "Id"=$1`, deliveryID, status, sentAt, errorText); updateErr != nil {
 		return updateErr
 	}
-	return err
+	if err != nil {
+		s.log.Warn("browser push delivery failed; in-app notification is retained", "job_id", job.ID, "error", err)
+	}
+	return nil
 }
 
 func nullableString(value sql.NullString) any {
