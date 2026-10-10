@@ -75,7 +75,9 @@ func (s *Scheduler) RunEventDriven(ctx context.Context, databaseURL string, reco
 		next, err := s.nextWake(ctx)
 		if err != nil {
 			s.log.Warn("could not calculate next worker wake", "error", err)
-		} else if next > 0 && next < wait {
+		} else if next <= 0 {
+			wait = time.Second
+		} else if next < wait {
 			wait = next
 		}
 		if wait < time.Second {
