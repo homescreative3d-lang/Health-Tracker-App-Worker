@@ -1,3 +1,12 @@
+CREATE TABLE IF NOT EXISTS "NotificationRuntimeConfig" (
+    "Key" text PRIMARY KEY,
+    "Value" text NOT NULL,
+    "UpdatedAt" timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO "NotificationRuntimeConfig" ("Key", "Value")
+VALUES ('NotificationSchedulerProvider', 'dotnet')
+ON CONFLICT ("Key") DO NOTHING;
+
 ALTER TABLE "Notifications" ADD COLUMN IF NOT EXISTS "IdempotencyKey" text;
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_Notifications_IdempotencyKey"
     ON "Notifications" ("IdempotencyKey")
