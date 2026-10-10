@@ -23,6 +23,22 @@ CREATE TABLE IF NOT EXISTS "NotificationOutbox" (
 CREATE INDEX IF NOT EXISTS "IX_NotificationOutbox_Unprocessed"
     ON "NotificationOutbox" ("CreatedAt") WHERE "ProcessedAt" IS NULL;
 
+CREATE OR REPLACE FUNCTION "notify_notification_scheduler_config_change"()
+RETURNS trigger LANGUAGE plpgsql AS $
+BEGIN
+    INSERT INTO "NotificationOutbox" ("EntityType", "EntityId", "Operation")
+    VALUES ('NotificationRuntimeConfig', '00000000-0000-0000-0000-000000000000'::uuid, 'UPDATE');
+    PERFORM pg_notify('notification_schedule_changed', 'NotificationRuntimeConfig');
+    NEW."UpdatedAt" := now();
+    RETURN NEW;
+END;
+$;
+DROP TRIGGER IF EXISTS "TR_NotificationRuntimeConfig_Changed" ON "NotificationRuntimeConfig";
+CREATE TRIGGER "TR_NotificationRuntimeConfig_Changed"
+AFTER UPDATE OF "Value" ON "NotificationRuntimeConfig"
+FOR EACH ROW WHEN (OLD."Value" IS DISTINCT FROM NEW."Value")
+EXECUTE FUNCTION "notify_notification_scheduler_config_change"();
+
 CREATE TABLE IF NOT EXISTS "NotificationJobs" (
     "Id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     "DedupKey" text NOT NULL UNIQUE,
