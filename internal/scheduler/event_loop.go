@@ -84,7 +84,10 @@ func (s *Scheduler) RunEventDriven(ctx context.Context, databaseURL string, reco
 			if err != nil {
 				s.log.Warn("could not calculate next worker wake", "error", err)
 			} else if next <= 0 {
-				wait = time.Second
+				// No future job is queued, or the due-job pass already handled the
+				// overdue jobs. Wait for LISTEN/NOTIFY or the recovery timeout rather
+				// than querying PostgreSQL once per second.
+				wait = recoveryInterval
 			} else if next < wait {
 				wait = next
 			}
