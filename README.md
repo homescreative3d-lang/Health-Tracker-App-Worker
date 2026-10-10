@@ -55,7 +55,7 @@ Optional (browser push is disabled if either key is missing):
 
 Optional:
 - `WEBPUSH_SUBJECT` (defaults to `mailto:notifications@tended.app`)
-- `RECOVERY_INTERVAL` (Go duration, defaults to `5m`, minimum `30s`)
+- `RECOVERY_INTERVAL` (Go duration, defaults to `20s`, minimum `20s`)
 - `LOG_LEVEL` (`debug`, `info`, `warn`, `error`)
 - `APP_TIMEZONE_FALLBACK` (defaults to `Asia/Kolkata`)
 
@@ -82,7 +82,7 @@ From this repository, set the local worker environment and run the checks:
 ```powershell
 $env:DATABASE_URL = "postgres://tended:tended_local_only@localhost:5433/tended_dev?sslmode=disable"
 $env:APP_TIMEZONE_FALLBACK = "Asia/Kolkata"
-$env:RECOVERY_INTERVAL = "30s"
+$env:RECOVERY_INTERVAL = "20s"
 
 go mod tidy
 go test ./...
