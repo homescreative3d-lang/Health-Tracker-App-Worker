@@ -28,8 +28,8 @@ type notificationJob struct {
 // durable jobs to deliver reminders. A low-frequency recovery timeout protects
 // against missed LISTEN/NOTIFY messages and worker restarts.
 func (s *Scheduler) RunEventDriven(ctx context.Context, databaseURL string, recoveryInterval time.Duration) error {
-	if recoveryInterval < 30*time.Second {
-		return fmt.Errorf("recovery interval must be at least 30s")
+	if recoveryInterval < 20*time.Second {
+		return fmt.Errorf("recovery interval must be at least 20s")
 	}
 	listener, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
