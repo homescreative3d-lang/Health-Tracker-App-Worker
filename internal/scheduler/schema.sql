@@ -3,6 +3,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS "IX_Notifications_IdempotencyKey"
     ON "Notifications" ("IdempotencyKey")
     WHERE "IdempotencyKey" IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS "NotificationRuntimeConfig" (
+    "Id" integer PRIMARY KEY CHECK ("Id" = 1),
+    "Enabled" boolean NOT NULL DEFAULT true,
+    "ActiveProvider" text NOT NULL DEFAULT 'dotnet'
+        CHECK ("ActiveProvider" IN ('dotnet', 'go')),
+    "UpdatedAt" timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO "NotificationRuntimeConfig" ("Id", "Enabled", "ActiveProvider")
+VALUES (1, true, 'dotnet')
+ON CONFLICT ("Id") DO NOTHING;
+
+CREATE OR REPLACE FUNCTION "notify_notification_runtime_config_changed"()
+RETURNS trigger LANGUAGE plpgsql AS $
+BEGIN
+    PERFORM pg_notify('notification_schedule_changed', 'runtime-config');
+    RETURN NEW;
+END;
+$;
+DROP TRIGGER IF EXISTS "TR_NotificationRuntimeConfig_Changed" ON "NotificationRuntimeConfig";
+CREATE TRIGGER "TR_NotificationRuntimeConfig_Changed"
+AFTER UPDATE ON "NotificationRuntimeConfig"
+FOR EACH ROW EXECUTE FUNCTION "notify_notification_runtime_config_changed"();
+
 CREATE TABLE IF NOT EXISTS "NotificationOutbox" (
     "Id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     "EntityType" text NOT NULL,
