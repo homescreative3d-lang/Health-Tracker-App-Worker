@@ -47,29 +47,47 @@ func (s *Scheduler) RunEventDriven(ctx context.Context, databaseURL string, reco
 		return fmt.Errorf("listen for schedule changes: %w", err)
 	}
 	notifications := waitForNotifications(ctx, listener)
-	if err := s.reconcileJobs(ctx); err != nil {
-		return fmt.Errorf("initial schedule reconciliation: %w", err)
-	}
+	wasEnabled := false
 
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.processOutbox(ctx); err != nil {
-			s.log.Error("outbox processing failed", "error", err)
+		enabled, provider, configErr := s.runtimeConfig(ctx)
+		if configErr != nil {
+			s.log.Error("read notification runtime config; processing is paused for safety", "error", configErr)
+			enabled = false
 		}
-		if err := s.processDueJobs(ctx); err != nil {
-			s.log.Error("due job processing failed", "error", err)
+		active := enabled && provider == "go"
+		if active {
+			if !wasEnabled {
+				if err := s.reconcileJobs(ctx); err != nil {
+					s.log.Error("initial schedule reconciliation failed", "error", err)
+				} else {
+					s.log.Info("Go notification provider enabled by database configuration")
+				}
+			}
+			if err := s.processOutbox(ctx); err != nil {
+				s.log.Error("outbox processing failed", "error", err)
+			}
+			if err := s.processDueJobs(ctx); err != nil {
+				s.log.Error("due job processing failed", "error", err)
+			}
+		} else if wasEnabled {
+			s.log.Info("Go notification provider disabled by database configuration", "enabled", enabled, "active_provider", provider)
 		}
+		wasEnabled = active
 
 		wait := recoveryInterval
-		next, err := s.nextWake(ctx)
-		if err != nil {
-			s.log.Warn("could not calculate next worker wake", "error", err)
-		} else if next <= 0 {
-			wait = time.Second
-		} else if next < wait {
-			wait = next
+		if active {
+			next, err := s.nextWake(ctx)
+			if err != nil {
+				s.log.Warn("could not calculate next worker wake", "error", err)
+			} else if next <= 0 {
+				wait = time.Second
+			} else if next < wait {
+				wait = next
+			}
 		}
 		if wait < time.Second {
 			wait = time.Second
@@ -115,6 +133,15 @@ func (s *Scheduler) RunEventDriven(ctx context.Context, databaseURL string, reco
 	}
 }
 
+func (s *Scheduler) runtimeConfig(ctx context.Context) (bool, string, error) {
+	var enabled bool
+	var provider string
+	err := s.db.QueryRowContext(ctx, `SELECT "Enabled", "ActiveProvider" FROM "NotificationRuntimeConfig" WHERE "Id" = 1`).Scan(&enabled, &provider)
+	if err != nil {
+		return false, "", fmt.Errorf("query NotificationRuntimeConfig: %w", err)
+	}
+	return enabled, provider, nil
+}
 func waitForNotifications(ctx context.Context, listener *pgx.Conn) <-chan error {
 	notifications := make(chan error, 1)
 	go func() {
