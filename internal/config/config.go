@@ -34,9 +34,6 @@ func Load() (Config, error) {
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
 		return Config{}, fmt.Errorf("DATABASE_URL must be a valid postgres:// or postgresql:// URL")
 	}
-	if cfg.WebPushPublicKey == "" || cfg.WebPushPrivateKey == "" {
-		return Config{}, fmt.Errorf("WEBPUSH_PUBLIC_KEY and WEBPUSH_PRIVATE_KEY are required")
-	}
 	if cfg.WebPushSubject == "" {
 		cfg.WebPushSubject = "mailto:notifications@tended.app"
 	}
