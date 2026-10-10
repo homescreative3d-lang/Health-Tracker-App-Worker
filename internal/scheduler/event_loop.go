@@ -31,14 +31,14 @@ func (s *Scheduler) RunEventDriven(ctx context.Context, databaseURL string, reco
 	if recoveryInterval < 30*time.Second {
 		return fmt.Errorf("recovery interval must be at least 30s")
 	}
-	if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("apply notification worker schema: %w", err)
-	}
 	listener, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
 		return fmt.Errorf("open PostgreSQL notification listener: %w", err)
 	}
 	defer listener.Close(context.Background())
+	if _, err := listener.PgConn().Exec(ctx, schemaSQL).ReadAll(); err != nil {
+		return fmt.Errorf("apply notification worker schema: %w", err)
+	}
 	if _, err := listener.Exec(ctx, "LISTEN notification_schedule_changed"); err != nil {
 		return fmt.Errorf("listen for schedule changes: %w", err)
 	}
