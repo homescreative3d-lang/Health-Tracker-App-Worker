@@ -240,13 +240,13 @@ func (s *Scheduler) reconcileJobs(ctx context.Context) error {
 							}
 						}
 					}
-					if u.FinalEnabled && !scheduled.Before(now) {
+					if u.FinalEnabled && shouldScheduleFinal(scheduled, now) {
 						key := fmt.Sprintf("final:%s:%s", u.ID, doseID)
 						if err := s.upsertJob(ctx, key, u.ID, doseID, m.ID, "dose_final", scheduled, "Medicine due now", fmt.Sprintf("%s for %s is due now.", m.Name, m.PatientName), string(data)); err != nil {
 							return err
 						}
 					}
-					missedAt := scheduled.Add(time.Minute)
+					missedAt := missedDoseTime(scheduled)
 					key := fmt.Sprintf("missed:%s:%s", u.ID, doseID)
 					if err := s.upsertJob(ctx, key, u.ID, doseID, m.ID, "dose_missed", missedAt, "Dose missed", fmt.Sprintf("%s for %s was not marked taken at %s.", m.Name, m.PatientName, raw), string(data)); err != nil {
 						return err
@@ -256,6 +256,18 @@ func (s *Scheduler) reconcileJobs(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+
+// shouldScheduleFinal allows a delayed/restarted worker to deliver the due-now alert
+// if it wakes within the dose's one-hour Taken/Skip window.
+func shouldScheduleFinal(scheduled, now time.Time) bool {
+	return scheduled.After(now.Add(-time.Hour))
+}
+
+// missedDoseTime keeps a dose actionable for one hour after its scheduled time.
+func missedDoseTime(scheduled time.Time) time.Time {
+	return scheduled.Add(time.Hour)
 }
 
 func (s *Scheduler) upsertJob(ctx context.Context, key, userID, doseID, medicineID, kind string, scheduled time.Time, title, message, data string) error {
@@ -406,7 +418,8 @@ RETURNING "Id"`, job.UserID, nullableString(job.DoseEventID), job.Type, job.Sche
 		return updateErr
 	}
 	if err != nil {
-		s.log.Warn("browser push delivery failed; in-app notification is retained", "job_id", job.ID, "error", err)
+		s.log.Warn("browser push delivery failed; in-app notification is retained and push will be retried", "job_id", job.ID, "error", err)
+		return fmt.Errorf("web push delivery failed: %w", err)
 	}
 	return nil
 }
