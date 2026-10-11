@@ -134,7 +134,7 @@ WHERE p."UserId" = $1
 
 func (s *Scheduler) processMedicine(ctx context.Context, u user, m medicine, today, now time.Time, loc *time.Location) error {
 	if m.IsRecurring && m.Supply <= m.RefillThreshold {
-		if err := s.notifyOnce(ctx, u.ID, "", "refill_low", now.Truncate(24*time.Hour), "Refill reminder", fmt.Sprintf("%s for %s has %d doses remaining.", m.Name, m.PatientName, m.Supply), map[string]string{"medicineId": m.ID, "patientId": m.PatientID}); err != nil {
+		if err := s.notifyOnce(ctx, u.ID, "", "refill_low", time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc), "Refill reminder", fmt.Sprintf("%s for %s has %d doses remaining.", m.Name, m.PatientName, m.Supply), map[string]string{"medicineId": m.ID, "patientId": m.PatientID}); err != nil {
 			s.log.Warn("refill notification failed", "medicine_id", m.ID, "error", err)
 		}
 	}
@@ -225,44 +225,116 @@ func missedNotificationDue(minutesUntil float64) bool {
 }
 
 func (s *Scheduler) deliverOnce(ctx context.Context, userID, doseID, kind string, scheduled time.Time, title, body, notificationType string) error {
-	var deliveryID string
+	var deliveryID, deliveryStatus string
 	err := s.db.QueryRowContext(ctx, `
 INSERT INTO "NotificationDeliveries" ("Id","UserId","DoseEventId","Type","ScheduledFor","Status")
 VALUES (gen_random_uuid(),$1,$2,$3,$4,'pending')
 ON CONFLICT ("DoseEventId","UserId","Type","ScheduledFor") DO NOTHING
 RETURNING "Id"`, userID, doseID, kind, scheduled).Scan(&deliveryID)
-	if errors.Is(err, sql.ErrNoRows) { return nil }
-	if err != nil { return fmt.Errorf("reserve delivery: %w", err) }
-	err = s.sendToUser(ctx, userID, title, body, notificationType, doseID)
-	status := "sent"
-	var errorText any
-	var sentAt any = time.Now().UTC()
-	if err != nil { status = "failed"; errorText = err.Error(); sentAt = nil }
-	_, updateErr := s.db.ExecContext(ctx, `UPDATE "NotificationDeliveries" SET "Status"=$2,"SentAt"=$3,"Error"=$4 WHERE "Id"=$1`, deliveryID, status, sentAt, errorText)
-	if updateErr != nil { return updateErr }
-	if err != nil {
-		return s.addNotification(ctx, userID, "notification_failed", "Notification not delivered", title+": "+body, map[string]string{"doseId": doseID, "type": notificationType})
+	if errors.Is(err, sql.ErrNoRows) {
+		err = s.db.QueryRowContext(ctx, `SELECT "Id","Status" FROM "NotificationDeliveries" WHERE "UserId"=$1 AND "DoseEventId"=$2 AND "Type"=$3 AND "ScheduledFor"=$4`, userID, doseID, kind, scheduled).Scan(&deliveryID, &deliveryStatus)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("load existing delivery: %w", err)
+		}
+		if deliveryStatus == "sent" {
+			return nil
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE "NotificationDeliveries" SET "Status"='pending',"SentAt"=NULL,"Error"=NULL WHERE "Id"=$1`, deliveryID); err != nil {
+			return fmt.Errorf("reset failed delivery: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("reserve delivery: %w", err)
 	}
-	return nil
+
+	sendErr := s.sendToUser(ctx, userID, title, body, notificationType, doseID)
+	if sendErr != nil {
+		_, updateErr := s.db.ExecContext(ctx, `UPDATE "NotificationDeliveries" SET "Status"='failed',"SentAt"=NULL,"Error"=$2 WHERE "Id"=$1`, deliveryID, sendErr.Error())
+		if updateErr != nil {
+			return updateErr
+		}
+		if err := s.addFailureOnce(ctx, userID, doseID, notificationType, title+": "+body); err != nil {
+			return err
+		}
+		return sendErr
+	}
+
+	// Keep the in-app bell in sync with successful system push notifications.
+	if err := s.addNotification(ctx, userID, notificationType, title, body, map[string]string{"doseId": doseID, "type": notificationType}); err != nil {
+		_, _ = s.db.ExecContext(ctx, `UPDATE "NotificationDeliveries" SET "Status"='failed',"Error"=$2 WHERE "Id"=$1`, deliveryID, err.Error())
+		return fmt.Errorf("record in-app notification: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE "NotificationDeliveries" SET "Status"='sent',"SentAt"=now(),"Error"=NULL WHERE "Id"=$1`, deliveryID)
+	return err
+}
+
+func (s *Scheduler) addFailureOnce(ctx context.Context, userID, doseID, notificationType, body string) error {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+SELECT 1 FROM "Notifications"
+WHERE "UserId"=$1 AND "Type"='notification_failed'
+AND "DataJson"::jsonb ->> 'doseId'=$2
+AND "DataJson"::jsonb ->> 'type'=$3)`, userID, doseID, notificationType).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	return s.addNotification(ctx, userID, "notification_failed", "Notification not delivered", body, map[string]string{"doseId": doseID, "type": notificationType})
 }
 
 func (s *Scheduler) notifyOnce(ctx context.Context, userID, doseID, kind string, scheduled time.Time, title, body string, data map[string]string) error {
-	// A daily unique delivery reservation prevents duplicate low-supply alerts.
-	var id string
-	err := s.db.QueryRowContext(ctx, `
+	var deliveryID, status string
+	err := s.db.QueryRowContext(ctx, `SELECT "Id","Status" FROM "NotificationDeliveries"
+WHERE "UserId"=$1 AND "DoseEventId" IS NULL AND "Type"=$2 AND "ScheduledFor"=$3
+ORDER BY "Id" LIMIT 1`, userID, kind, scheduled).Scan(&deliveryID, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = s.db.QueryRowContext(ctx, `
 INSERT INTO "NotificationDeliveries" ("Id","UserId","DoseEventId","Type","ScheduledFor","Status")
-VALUES (gen_random_uuid(),$1,NULL,$2,$3,'pending')
-ON CONFLICT ("DoseEventId","UserId","Type","ScheduledFor") DO NOTHING
-RETURNING "Id"`, userID, kind, scheduled).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) { return nil }
-	if err != nil { return err }
-	err = s.sendToUser(ctx, userID, title, body, kind, doseID)
-	status := "sent"
-	var sentAt any = time.Now().UTC()
-	var errorText any
-	if err != nil { status = "failed"; sentAt = nil; errorText = err.Error() }
-	_, updateErr := s.db.ExecContext(ctx, `UPDATE "NotificationDeliveries" SET "Status"=$2,"SentAt"=$3,"Error"=$4 WHERE "Id"=$1`, id, status, sentAt, errorText)
-	if updateErr != nil { return updateErr }
+VALUES (gen_random_uuid(),$1,NULL,$2,$3,'pending') RETURNING "Id"`, userID, kind, scheduled).Scan(&deliveryID)
+		if err != nil {
+			return fmt.Errorf("reserve reminder: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("find existing reminder: %w", err)
+	} else if status == "sent" {
+		return nil
+	} else {
+		if _, err := s.db.ExecContext(ctx, `UPDATE "NotificationDeliveries" SET "Status"='pending',"SentAt"=NULL,"Error"=NULL WHERE "Id"=$1`, deliveryID); err != nil {
+			return err
+		}
+	}
+
+	pushErr := s.sendToUser(ctx, userID, title, body, kind, doseID)
+	if err := s.addRefillNotificationOnce(ctx, userID, kind, scheduled, title, body, data); err != nil {
+		_, _ = s.db.ExecContext(ctx, `UPDATE "NotificationDeliveries" SET "Status"='failed',"Error"=$2 WHERE "Id"=$1`, deliveryID, err.Error())
+		return err
+	}
+	if pushErr != nil {
+		_, updateErr := s.db.ExecContext(ctx, `UPDATE "NotificationDeliveries" SET "Status"='failed',"SentAt"=NULL,"Error"=$2 WHERE "Id"=$1`, deliveryID, pushErr.Error())
+		if updateErr != nil {
+			return updateErr
+		}
+		return pushErr
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE "NotificationDeliveries" SET "Status"='sent',"SentAt"=now(),"Error"=NULL WHERE "Id"=$1`, deliveryID)
+	return err
+}
+
+func (s *Scheduler) addRefillNotificationOnce(ctx context.Context, userID, kind string, scheduled time.Time, title, body string, data map[string]string) error {
+	medicineID := data["medicineId"]
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+SELECT 1 FROM "Notifications"
+WHERE "UserId"=$1 AND "Type"=$2 AND "CreatedAt">=$3 AND "CreatedAt"<$4
+AND "DataJson"::jsonb ->> 'medicineId'=$5)`, userID, kind, scheduled, scheduled.Add(24*time.Hour), medicineID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
 	return s.addNotification(ctx, userID, kind, title, body, data)
 }
 
