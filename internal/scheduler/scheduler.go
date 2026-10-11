@@ -167,25 +167,61 @@ RETURNING "Id"`, m.PatientID, m.ID, dateOnly(day), doseTime).Scan(&id)
 
 func (s *Scheduler) processDose(ctx context.Context, u user, m medicine, doseID, doseTime string, scheduled, now time.Time) error {
 	var status string
-	if err := s.db.QueryRowContext(ctx, `SELECT "Status" FROM "DoseEvents" WHERE "Id"=$1`, doseID).Scan(&status); err != nil { return err }
-	if status == "taken" || status == "skipped" || status == "rescheduled" { return nil }
+	if err := s.db.QueryRowContext(ctx, `SELECT "Status" FROM "DoseEvents" WHERE "Id"=$1`, doseID).Scan(&status); err != nil {
+		return err
+	}
+	if status == "taken" || status == "skipped" || status == "rescheduled" {
+		return nil
+	}
+
 	minutesUntil := scheduled.Sub(now).Minutes()
-	if minutesUntil > 0 && minutesUntil <= float64(max(0, u.LeadMinutes)) {
-		occurrence := now.Truncate(time.Minute)
-		if err := s.deliverOnce(ctx, u.ID, doseID, "dose_reminder", occurrence, "Medicine reminder", fmt.Sprintf("%s for %s is due at %s.", m.Name, m.PatientName, doseTime), "dose_reminder"); err != nil { return err }
+	if occurrence, ok := reminderOccurrence(scheduled, now, u.LeadMinutes, u.RepeatMinutes); ok {
+		if err := s.deliverOnce(ctx, u.ID, doseID, "dose_reminder", occurrence, "Medicine reminder", fmt.Sprintf("%s for %s is due at %s.", m.Name, m.PatientName, doseTime), "dose_reminder"); err != nil {
+			return err
+		}
 	}
-	if u.FinalEnabled && minutesUntil <= 0 && minutesUntil > -1 {
-		if err := s.deliverOnce(ctx, u.ID, doseID, "dose_final", scheduled, "Medicine due now", fmt.Sprintf("%s for %s is due now.", m.Name, m.PatientName), "dose_final"); err != nil { return err }
+	if u.FinalEnabled && finalNotificationDue(minutesUntil) {
+		if err := s.deliverOnce(ctx, u.ID, doseID, "dose_final", scheduled, "Medicine due now", fmt.Sprintf("%s for %s is due now.", m.Name, m.PatientName), "dose_final"); err != nil {
+			return err
+		}
 	}
-	if minutesUntil <= 0 && status == "pending" {
+	if missedNotificationDue(minutesUntil) && status == "pending" {
 		_, err := s.db.ExecContext(ctx, `UPDATE "DoseEvents" SET "Status"='missed',"MissedAt"=now() WHERE "Id"=$1 AND "Status"='pending'`, doseID)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		status = "missed"
 	}
-	if minutesUntil <= 0 && status == "missed" {
-		if err := s.deliverOnce(ctx, u.ID, doseID, "dose_missed", scheduled, "Dose missed", fmt.Sprintf("%s for %s was not marked taken at %s.", m.Name, m.PatientName, doseTime), "dose_missed"); err != nil { return err }
+	if missedNotificationDue(minutesUntil) && status == "missed" {
+		if err := s.deliverOnce(ctx, u.ID, doseID, "dose_missed", scheduled, "Dose missed", fmt.Sprintf("%s for %s was not marked taken at %s.", m.Name, m.PatientName, doseTime), "dose_missed"); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// reminderOccurrence returns the current lead-time reminder slot, respecting the user's
+// repeat interval. If a scheduler tick is delayed, it catches up the current slot once.
+func reminderOccurrence(scheduled, now time.Time, leadMinutes, repeatMinutes int) (time.Time, bool) {
+	minutesUntil := scheduled.Sub(now).Minutes()
+	if leadMinutes <= 0 || minutesUntil <= 0 || minutesUntil > float64(leadMinutes) {
+		return time.Time{}, false
+	}
+	if repeatMinutes < 1 {
+		repeatMinutes = 1
+	}
+	elapsed := float64(leadMinutes) - minutesUntil
+	slot := int(elapsed / float64(repeatMinutes))
+	occurrence := scheduled.Add(-time.Duration(leadMinutes)*time.Minute + time.Duration(slot*repeatMinutes)*time.Minute)
+	return occurrence, !occurrence.After(now)
+}
+
+func finalNotificationDue(minutesUntil float64) bool {
+	return minutesUntil <= 0 && minutesUntil > -60
+}
+
+func missedNotificationDue(minutesUntil float64) bool {
+	return minutesUntil <= -60
 }
 
 func (s *Scheduler) deliverOnce(ctx context.Context, userID, doseID, kind string, scheduled time.Time, title, body, notificationType string) error {
