@@ -9,12 +9,12 @@ import (
 )
 
 type Config struct {
-	DatabaseURL     string
+	DatabaseURL      string
 	WebPushPublicKey string
 	WebPushPrivateKey string
-	WebPushSubject  string
-	PollInterval    time.Duration
-	LogLevel        string
+	WebPushSubject   string
+	RecoveryInterval time.Duration
+	LogLevel         string
 	FallbackTimezone string
 }
 
@@ -34,17 +34,14 @@ func Load() (Config, error) {
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
 		return Config{}, fmt.Errorf("DATABASE_URL must be a valid postgres:// or postgresql:// URL")
 	}
-	if cfg.WebPushPublicKey == "" || cfg.WebPushPrivateKey == "" {
-		return Config{}, fmt.Errorf("WEBPUSH_PUBLIC_KEY and WEBPUSH_PRIVATE_KEY are required")
-	}
 	if cfg.WebPushSubject == "" {
 		cfg.WebPushSubject = "mailto:notifications@tended.app"
 	}
-	if cfg.PollInterval, err = durationEnv("POLL_INTERVAL", 15*time.Second); err != nil {
+	if cfg.RecoveryInterval, err = durationEnv("RECOVERY_INTERVAL", 20*time.Second); err != nil {
 		return Config{}, err
 	}
-	if cfg.PollInterval < 5*time.Second {
-		return Config{}, fmt.Errorf("POLL_INTERVAL must be at least 5s")
+	if cfg.RecoveryInterval < 20*time.Second {
+		return Config{}, fmt.Errorf("RECOVERY_INTERVAL must be at least 20s")
 	}
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "info"
@@ -65,7 +62,7 @@ func durationEnv(key string, fallback time.Duration) (time.Duration, error) {
 	}
 	value, err := time.ParseDuration(raw)
 	if err != nil {
-		return 0, fmt.Errorf("%s must be a Go duration such as 15s: %w", key, err)
+		return 0, fmt.Errorf("%s must be a Go duration such as 5m: %w", key, err)
 	}
 	return value, nil
 }

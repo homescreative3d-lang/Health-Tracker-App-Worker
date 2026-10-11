@@ -49,10 +49,10 @@ func main() {
 	}
 
 	push := notifier.NewWebPush(cfg.WebPushPublicKey, cfg.WebPushPrivateKey, cfg.WebPushSubject)
-	job := scheduler.New(db, push, cfg.FallbackTimezone, logger)
-	logger.Info("notification worker started", "poll_interval", cfg.PollInterval.String())
+	worker := scheduler.New(db, push, cfg.FallbackTimezone, logger)
+	logger.Info("event-driven notification worker starting", "recovery_interval", cfg.RecoveryInterval.String())
 
-	if err := job.Run(ctx, cfg.PollInterval); err != nil && !errors.Is(err, context.Canceled) {
+	if err := worker.RunEventDriven(ctx, cfg.DatabaseURL, cfg.RecoveryInterval); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("worker stopped unexpectedly", "error", err)
 		os.Exit(1)
 	}
