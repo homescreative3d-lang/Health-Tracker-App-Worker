@@ -29,3 +29,32 @@ func TestOccursPauseWindow(t *testing.T) {
 	m := medicine{Frequency:"daily", StartDate:start, DurationType:"ongoing", IsRecurring:true, PauseStart:sql.NullTime{Time: pauseStart, Valid: true}, PauseEnd:sql.NullTime{Time: pauseEnd, Valid: true}}
 	if occurs(m, pauseStart) || occurs(m, pauseEnd) || !occurs(m, start.AddDate(0,0,5)) { t.Fatal("pause window handling is incorrect") }
 }
+
+
+func TestMissedDoseTimeIsOneHourAfterSchedule(t *testing.T) {
+	scheduled := time.Date(2026, 10, 11, 20, 0, 0, 0, time.UTC)
+	if got, want := missedDoseTime(scheduled), scheduled.Add(time.Hour); !got.Equal(want) {
+		t.Fatalf("missedDoseTime = %s, want %s", got, want)
+	}
+}
+
+func TestFinalAlertCatchUpWindow(t *testing.T) {
+	now := time.Date(2026, 10, 11, 20, 30, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		scheduled time.Time
+		want bool
+	}{
+		{name: "future dose", scheduled: now.Add(30 * time.Minute), want: true},
+		{name: "dose 30 minutes ago", scheduled: now.Add(-30 * time.Minute), want: true},
+		{name: "dose exactly one hour ago", scheduled: now.Add(-time.Hour), want: false},
+		{name: "dose more than one hour ago", scheduled: now.Add(-2 * time.Hour), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldScheduleFinal(tc.scheduled, now); got != tc.want {
+				t.Fatalf("shouldScheduleFinal = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
