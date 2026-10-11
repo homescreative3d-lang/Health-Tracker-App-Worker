@@ -284,7 +284,7 @@ INSERT INTO "NotificationJobs"
 VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9)
 ON CONFLICT ("DedupKey") DO UPDATE
 SET "Status"='pending',"NextAttemptAt"=EXCLUDED."NextAttemptAt","Title"=EXCLUDED."Title",
-    "Message"=EXCLUDED."Message","DataJson"=EXCLUDED."DataJson',"UpdatedAt"=now(),"LockedUntil"=NULL
+    "Message"=EXCLUDED."Message","DataJson"=EXCLUDED."DataJson","UpdatedAt"=now(),"LockedUntil"=NULL
 WHERE "NotificationJobs"."Status"='cancelled'`, key, userID, doseValue, medicineValue, kind, scheduled.UTC(), title, message, data)
 	if err != nil {
 		return fmt.Errorf("upsert notification job %s: %w", key, err)
